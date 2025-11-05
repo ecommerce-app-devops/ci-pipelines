@@ -1,0 +1,137 @@
+name: Docker Build and Push to ACR
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        required: true
+        type: string
+      image_tag:
+        required: false
+        default: dev
+        type: string
+      dockerfile_path:
+        required: false
+        default: ./Dockerfile
+        type: string
+      context:
+        required: false
+        default: .
+        type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+      ACR_USERNAME:
+        required: true
+      ACR_PASSWORD:
+        required: true
+      ACR_NAME:
+        required: true
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      RESOURCE_GROUP:
+        required: true
+      GH_TOKEN:
+        required: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image_name: ${{ steps.extract_name.outputs.simple_name }}
+      final_tag: ${{ steps.determine_tag.outputs.final_tag }}
+      service_name: ${{ steps.extract_name.outputs.simple_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Azure Container Registry
+        uses: azure/docker-login@v1
+        with:
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+          login-server: ${{ secrets.ACR_NAME }}.azurecr.io
+
+      - name: Extract image name without path
+        id: extract_name
+        run: |
+          # Extract the part after the last slash
+          IMAGE_NAME=$(basename "${{ inputs.image_name }}")
+          echo "simple_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Determine final tag
+        id: determine_tag
+        run: |
+          if [ "${{ inputs.image_tag }}" = "main" ]; then
+            echo "final_tag=prod" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.image_tag }}" = "develop" ]; then
+            echo "final_tag=stage" >> $GITHUB_OUTPUT
+          else
+            echo "final_tag=${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker image (without pushing)
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile_path }}
+          push: false
+          tags: image-temp:scan
+
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: image-temp:scan
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+
+      - name: Build and push Docker image to ACR
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile_path }}
+          push: true
+          tags: |
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ steps.extract_name.outputs.simple_name }}:${{ steps.determine_tag.outputs.final_tag }}
+      
+      - name: Output image info
+        id: image_info
+        run: |
+          echo "image_name=${{ steps.extract_name.outputs.simple_name }}" >> $GITHUB_OUTPUT
+          echo "final_tag=${{ steps.determine_tag.outputs.final_tag }}" >> $GITHUB_OUTPUT
+
+  deploy-to-k8s:
+    needs: build-and-push
+    uses: ecommerce-microservices-backend-app-actions/ci-pipelines/.github/workflows/deploy-to-k8s.yml@main
+    with:
+      image_name: ${{ needs.build-and-push.outputs.image_name }}
+      image_tag: ${{ needs.build-and-push.outputs.final_tag }}
+      namespace: dev
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+      ACR_NAME: ${{ secrets.ACR_NAME }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}

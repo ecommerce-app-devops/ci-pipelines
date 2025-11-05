@@ -1,0 +1,64 @@
+name: PR to Stage Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        required: true
+        type: string
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      RESOURCE_GROUP:
+        required: true
+      ACR_NAME:
+        required: true
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+      ACR_USERNAME:
+        required: true
+      ACR_PASSWORD:
+        required: true
+      GH_TOKEN:
+        required: true
+
+jobs:
+  build-and-deploy:
+    uses: ecommerce-microservices-backend-app-actions/ci-pipelines/.github/workflows/build.yml@main
+    with:
+      image_name: ${{ inputs.image_name }}
+      image_tag: stage
+      dockerfile_path: ./Dockerfile
+      context: .
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+      ACR_NAME: ${{ secrets.ACR_NAME }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+  call-e2e:
+    needs: build-and-deploy
+    uses: ecommerce-microservices-backend-app-actions/ci-pipelines/.github/workflows/remote-e2e.yml@main
+    with:
+      namespace: dev
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}

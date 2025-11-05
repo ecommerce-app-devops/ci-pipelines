@@ -1,0 +1,175 @@
+name: Deploy to Kubernetes
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+      namespace:
+        required: true
+        type: string
+        description: The Kubernetes namespace to deploy to (dev, stage, prod)
+      manifest_path:
+        required: false
+        default: "infrastructure/k8s/{{namespace}}/{{service}}.yaml"
+        type: string
+        description: Path to the Kubernetes manifest
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      RESOURCE_GROUP:
+        required: true
+      ACR_NAME:
+        required: true
+      ACR_USERNAME:
+        required: true
+      ACR_PASSWORD:
+        required: true
+      GH_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract service name from image
+        id: extract_service
+        run: |
+          SERVICE_NAME=$(basename "${{ inputs.image_name }}")
+          echo "service_name=$SERVICE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Determine namespace from branch
+        id: determine_namespace
+        run: |
+          # Todos los ambientes usan el namespace 'dev'
+          NAMESPACE="dev"
+          echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
+
+      - name: Set Azure credentials
+        uses: azure/login@v1
+        with:
+          creds: >-
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            }
+
+      - name: Clear Azure CLI MSAL cache
+        run: rm -f ~/.azure/msal_http_cache.bin
+
+      - name: Upgrade Azure CLI to latest
+        run: |
+          az upgrade --yes
+          az version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "latest"
+
+      - name: Get AKS credentials
+        run: |
+          which az
+          az version
+          az aks get-credentials \
+            --resource-group "${{ secrets.RESOURCE_GROUP }}" \
+            --name microservices-cluster-prod \
+            --overwrite-existing
+
+      - name: Clone infra repository
+        run: |
+          git clone https://${{ secrets.GH_TOKEN }}@github.com/ecommerce-microservices-lab/infra.git infra-repo
+          cd infra-repo
+          if [ "${{ inputs.image_tag }}" = "stage" ]; then
+            git checkout stage || true
+          elif [ "${{ inputs.image_tag }}" = "prod" ]; then
+            git checkout main || true
+          else
+            git checkout main || true
+          fi
+          cd -
+
+      - name: Verify image tag exists in ACR
+        run: |
+          SERVICE="${{ steps.extract_service.outputs.service_name }}"
+          TAGS=$(az acr repository show-tags -n "${{ secrets.ACR_NAME }}" --repository "$SERVICE" -o tsv || true)
+          echo "Tags in ACR for $SERVICE:" $TAGS
+          echo "$TAGS" | grep -q "\b${{ inputs.image_tag }}\b" || { echo "❌ Tag not found in ACR: $SERVICE:${{ inputs.image_tag }}"; exit 1; }
+
+      - name: Ensure acr-secret exists in namespace
+        run: |
+          NAMESPACE="${{ steps.determine_namespace.outputs.namespace }}"
+          kubectl get secret acr-secret -n "$NAMESPACE" >/dev/null 2>&1 || \
+          kubectl create secret docker-registry acr-secret \
+            --docker-server="${{ secrets.ACR_NAME }}.azurecr.io" \
+            --docker-username="${{ secrets.ACR_USERNAME }}" \
+            --docker-password="${{ secrets.ACR_PASSWORD }}" \
+            -n "$NAMESPACE"
+
+      - name: Update manifest with new image
+        run: |
+          NAMESPACE="${{ steps.determine_namespace.outputs.namespace }}"
+          SERVICE="${{ steps.extract_service.outputs.service_name }}"
+          MANIFEST_PATH="infra-repo/k8s/$NAMESPACE/$SERVICE.yaml"
+          NEW_IMAGE="${{ secrets.ACR_NAME }}.azurecr.io/$SERVICE:${{ inputs.image_tag }}"
+          
+          # Check if manifest exists
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "❌ Manifest not found: $MANIFEST_PATH"
+            exit 1
+          fi
+          
+          echo "📝 Found manifest: $MANIFEST_PATH"
+          
+          # Update image line robustly (replace entire line)
+          sed -E -i "s|^([[:space:]]*image:[[:space:]]*).*$|\1$NEW_IMAGE|" "$MANIFEST_PATH"
+          
+          echo "✅ Updated image to: $NEW_IMAGE"
+
+      - name: Apply Kubernetes manifest
+        run: |
+          NAMESPACE="${{ steps.determine_namespace.outputs.namespace }}"
+          SERVICE="${{ steps.extract_service.outputs.service_name }}"
+          MANIFEST_PATH="infra-repo/k8s/$NAMESPACE/$SERVICE.yaml"
+          
+          kubectl apply -f "$MANIFEST_PATH"
+          echo "✅ Manifest applied successfully"
+
+      - name: Enforce final image (safety)
+        run: |
+          NAMESPACE="${{ steps.determine_namespace.outputs.namespace }}"
+          SERVICE="${{ steps.extract_service.outputs.service_name }}"
+          FINAL_IMAGE="${{ secrets.ACR_NAME }}.azurecr.io/$SERVICE:${{ inputs.image_tag }}"
+          kubectl set image deploy/$SERVICE $SERVICE=$FINAL_IMAGE -n "$NAMESPACE"
+          echo "🔒 Enforced image: $FINAL_IMAGE"
+
+      - name: Wait for rollout to complete
+        run: |
+          kubectl rollout status deployment/${{ steps.extract_service.outputs.service_name }} \
+            --namespace="${{ steps.determine_namespace.outputs.namespace }}" \
+            --timeout=5m
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          NAMESPACE="${{ steps.determine_namespace.outputs.namespace }}"
+          SERVICE="${{ steps.extract_service.outputs.service_name }}"
+          echo "=== Events ===" && kubectl get events -n "$NAMESPACE" --sort-by=.lastTimestamp | tail -n 50 || true
+          echo "=== Describe deployment ===" && kubectl describe deploy "$SERVICE" -n "$NAMESPACE" || true
+          RS=$(kubectl get rs -n "$NAMESPACE" -l app.kubernetes.io/name="$SERVICE" -o name | tail -n1 || true)
+          [ -n "$RS" ] && echo "=== Describe ReplicaSet $RS ===" && kubectl describe "$RS" -n "$NAMESPACE" || true

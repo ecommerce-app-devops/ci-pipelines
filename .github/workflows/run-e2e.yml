@@ -1,0 +1,186 @@
+name: Run Postman Tests with Newman
+
+on:
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: 'Namespace to test (dev, stage, prod)'
+        required: false
+        default: 'dev'
+  workflow_call:
+    inputs:
+      namespace:
+        required: false
+        default: 'dev'
+        type: string
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      RESOURCE_GROUP:
+        required: true
+
+jobs:
+  postman-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ci-templates repo
+        uses: actions/checkout@v3
+        with:
+          repository: ecommerce-microservices-lab/ci-templates
+          ref: main
+
+      - name: Set Azure credentials
+        uses: azure/login@v1
+        with:
+          creds: >-
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            }
+
+      - name: Clear Azure CLI MSAL cache
+        run: rm -f ~/.azure/msal_http_cache.bin
+
+      - name: Upgrade Azure CLI to latest
+        run: |
+          az upgrade --yes
+          az version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "latest"
+
+      - name: Get AKS credentials
+        run: |
+          which az
+          az version
+          az aks get-credentials \
+            --resource-group "${{ secrets.RESOURCE_GROUP }}" \
+            --name microservices-cluster-prod \
+            --overwrite-existing
+
+      - name: Get API Gateway IP
+        id: get_ip
+        run: |
+          NAMESPACE="${{ inputs.namespace }}"
+          
+          # Wait for IP to be assigned
+          for i in {1..30}; do
+            IP=$(kubectl get svc api-gateway -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [[ -n "$IP" && "$IP" != "null" ]]; then
+              echo "API_GATEWAY_IP=$IP" >> $GITHUB_OUTPUT
+              echo "Got API Gateway IP: $IP for namespace $NAMESPACE"
+              exit 0
+            fi
+            echo "⏳ Waiting for IP... (attempt $i/30)"
+            sleep 5
+          done
+          
+          echo "Failed to get API Gateway IP"
+          exit 1
+
+      - name: Verify Services in Eureka
+        run: |
+          NAMESPACE="${{ inputs.namespace }}"
+          
+          echo "Verifying all services are registered in Eureka..."
+          
+          # Port-forward Eureka temporarily
+          kubectl port-forward -n "$NAMESPACE" svc/service-discovery 8761:8761 > /dev/null 2>&1 &
+          EUREKA_PF_PID=$!
+          sleep 5
+          
+          # Expected services
+          EXPECTED_SERVICES=("API-GATEWAY" "USER-SERVICE" "PRODUCT-SERVICE" "PAYMENT-SERVICE" "ORDER-SERVICE" "SHIPPING-SERVICE" "FAVOURITE-SERVICE" "PROXY-CLIENT")
+          
+          for i in {1..30}; do
+            REGISTERED=$(curl -s http://localhost:8761/eureka/apps | grep -o '<name>[^<]*</name>' | grep -v 'MyOwn' || echo "")
+            
+            ALL_REGISTERED=true
+            MISSING=()
+            
+            for svc in "${EXPECTED_SERVICES[@]}"; do
+              if echo "$REGISTERED" | grep -q "$svc"; then
+                echo "  $svc"
+              else
+                echo "  $svc - missing"
+                MISSING+=("$svc")
+                ALL_REGISTERED=false
+              fi
+            done
+            
+            if [ "$ALL_REGISTERED" = true ]; then
+              echo "All services registered in Eureka"
+              kill $EUREKA_PF_PID 2>/dev/null
+              exit 0
+            fi
+            
+            echo "⏳ Waiting for services... (attempt $i/30)"
+            sleep 5
+          done
+          
+          echo "Failed to register all services in Eureka"
+          echo "   Missing: ${MISSING[@]}"
+          kill $EUREKA_PF_PID 2>/dev/null
+          exit 1
+
+      - name: Update Postman collection with dynamic IP
+        run: |
+          API_IP="${{ steps.get_ip.outputs.API_GATEWAY_IP }}"
+          API_URL="http://$API_IP:8080/app/api"
+          
+          echo "Updating Postman collection with URL: $API_URL"
+          
+          # Debug: list files
+          pwd
+          ls -la
+          echo "Looking for postman collection..."
+          find . -name "*postman*" -type f
+          
+          # Update the url variable in the collection
+          sed -i "s|\"value\": \"http://.*/app/api\"|\"value\": \"$API_URL\"|" api_gateway.postman_collection.json
+          
+          echo "Updated Postman collection"
+
+      - name: Update K6 test with dynamic IP
+        run: |
+          API_IP="${{ steps.get_ip.outputs.API_GATEWAY_IP }}"
+          API_URL="http://$API_IP:8080/actuator/health"
+          
+          echo "Updating K6 test with URL: $API_URL"
+          
+          # Update the URL in the K6 test
+          sed -i "s|http://.*:8080/actuator/health|$API_URL|" tests/performance/load-test.js
+          
+          echo "Updated K6 test"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Install k6
+        run: |
+          curl -s https://dl.k6.io/key.gpg | sudo apt-key add -
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt update
+          sudo apt install -y k6
+
+      - name: Run performance test
+        run: k6 run tests/performance/load-test.js
+
+      - name: Install Newman
+        run: npm install -g newman
+
+      - name: Run Newman collection with dynamic URL
+        run: |
+          newman run api_gateway.postman_collection.json

@@ -1,0 +1,32 @@
+name: Call Remote E2E Test and Wait
+
+on:
+  workflow_call:
+    inputs:
+      namespace:
+        required: false
+        default: 'dev'
+        type: string
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      RESOURCE_GROUP:
+        required: true
+
+jobs:
+  call-remote-e2e:
+    uses: ecommerce-microservices-backend-app-actions/ci-pipelines/.github/workflows/run-e2e.yml@main
+    with:
+      namespace: ${{ inputs.namespace }}
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}

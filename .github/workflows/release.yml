@@ -1,0 +1,51 @@
+name: Reusable Release Workflow
+
+on:
+  workflow_call:
+    inputs:
+      release_branch:
+        required: false
+        type: string
+        default: 'main'
+      node_version:
+        required: false
+        type: string
+        default: '22'
+    secrets:
+      GH_TOKEN:
+        required: true
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - run: npm ci
+
+      - name: Debug - Check GH_TOKEN availability
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "GH_TOKEN is empty or not available"
+            exit 1
+          else
+            echo "GH_TOKEN is available (length: ${#GH_TOKEN})"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - run: npx semantic-release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
