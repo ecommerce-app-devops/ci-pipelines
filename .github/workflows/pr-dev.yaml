@@ -2,38 +2,12 @@ name: CI Pipeline (PR to Develop Branch)
 
 on:
   workflow_call:
-    inputs:
-      projectKeyBase:
-        required: false
-        type: string
-        default: ${{ github.repository }}
-      projectNameBase:
-        required: false
-        type: string
-        default: ${{ github.repository }}
 
 jobs:
-  sonar:
+  tests:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Sanitize branch name, project key and name
-        id: sanitize
-        run: |
-          RAW_BRANCH="${{ github.head_ref }}"
-          SAFE_BRANCH=$(echo "$RAW_BRANCH" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
-
-          REPO_NAME=$(basename "${{ inputs.projectKeyBase }}")
-          PROJECT_KEY=$(echo "$REPO_NAME" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
-
-          # Convert 'order-service' to 'Order Service'
-          PROJECT_NAME=$(echo "$REPO_NAME" | sed -E 's/[-_]/ /g' | awk '{ for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2); print }')
-
-          echo "safe_branch_name=$SAFE_BRANCH" >> $GITHUB_OUTPUT
-          echo "sanitized_project_key=$PROJECT_KEY" >> $GITHUB_OUTPUT
-          echo "sanitized_project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
-
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -42,17 +16,6 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '11'
-
-      - name: Download sonar-project.properties from ci-templates
-        run: |
-          git clone --depth=1 https://github.com/ecommerce-app-devops/ci-pipelines temp-templates
-
-          sed -i "s/default-key/${{ steps.sanitize.outputs.sanitized_project_key }}/" sonar-project.properties
-          sed -i "s/default-name/${{ steps.sanitize.outputs.sanitized_project_name }} (${{ steps.sanitize.outputs.safe_branch_name }})/" sonar-project.properties
-          # Ensure SonarCloud organization and projectKey are set in a parametrizable way
-          echo "sonar.organization=${{ github.repository_owner }}" >> sonar-project.properties
-          echo "sonar.projectKey=${{ github.repository_owner }}_${{ steps.sanitize.outputs.sanitized_project_key }}" >> sonar-project.properties
-          echo "sonar.projectName=${{ steps.sanitize.outputs.sanitized_project_name }}" >> sonar-project.properties
 
       - name: Run Unit Tests
         run: mvn test

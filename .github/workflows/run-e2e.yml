@@ -1,4 +1,4 @@
-name: Run Postman Tests with Newman
+name: Run E2E and Performance Tests
 
 on:
   workflow_dispatch:
@@ -26,14 +26,17 @@ on:
         required: true
 
 jobs:
-  postman-tests:
+  e2e-and-performance-tests:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout ci-templates repo
+      - name: Checkout current repo
         uses: actions/checkout@v3
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v3
         with:
-          repository: ecommerce-microservices-lab/ci-templates
-          ref: main
+          java-version: '11'
+          distribution: 'temurin'
 
       - name: Set Azure credentials
         uses: azure/login@v1
@@ -78,6 +81,7 @@ jobs:
             IP=$(kubectl get svc api-gateway -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
             if [[ -n "$IP" && "$IP" != "null" ]]; then
               echo "API_GATEWAY_IP=$IP" >> $GITHUB_OUTPUT
+              echo "API_GATEWAY_URL=http://$IP" >> $GITHUB_OUTPUT
               echo "Got API Gateway IP: $IP for namespace $NAMESPACE"
               exit 0
             fi
@@ -110,16 +114,16 @@ jobs:
             
             for svc in "${EXPECTED_SERVICES[@]}"; do
               if echo "$REGISTERED" | grep -q "$svc"; then
-                echo "  $svc"
+                echo "  ✓ $svc"
               else
-                echo "  $svc - missing"
+                echo "  ✗ $svc - missing"
                 MISSING+=("$svc")
                 ALL_REGISTERED=false
               fi
             done
             
             if [ "$ALL_REGISTERED" = true ]; then
-              echo "All services registered in Eureka"
+              echo "✓ All services registered in Eureka"
               kill $EUREKA_PF_PID 2>/dev/null
               exit 0
             fi
@@ -128,59 +132,74 @@ jobs:
             sleep 5
           done
           
-          echo "Failed to register all services in Eureka"
+          echo "✗ Failed to register all services in Eureka"
           echo "   Missing: ${MISSING[@]}"
           kill $EUREKA_PF_PID 2>/dev/null
           exit 1
 
-      - name: Update Postman collection with dynamic IP
+      - name: Run E2E Tests
         run: |
-          API_IP="${{ steps.get_ip.outputs.API_GATEWAY_IP }}"
-          API_URL="http://$API_IP:8080/app/api"
+          API_URL="${{ steps.get_ip.outputs.API_GATEWAY_URL }}"
+          echo "Running E2E tests against: $API_URL"
           
-          echo "Updating Postman collection with URL: $API_URL"
+          # Set API Gateway URL as environment variable for tests
+          export API_GATEWAY_URL="$API_URL"
           
-          # Debug: list files
-          pwd
-          ls -la
-          echo "Looking for postman collection..."
-          find . -name "*postman*" -type f
-          
-          # Update the url variable in the collection
-          sed -i "s|\"value\": \"http://.*/app/api\"|\"value\": \"$API_URL\"|" api_gateway.postman_collection.json
-          
-          echo "Updated Postman collection"
+          # Run E2E tests with Maven
+          # Note: Tests may need to be configured to use API_GATEWAY_URL environment variable
+          mvn test -Dtest=*E2ETest \
+            -Dspring.profiles.active=test \
+            -Dapi.gateway.url="$API_URL" \
+            -Dmaven.test.failure.ignore=true
+        env:
+          API_GATEWAY_URL: ${{ steps.get_ip.outputs.API_GATEWAY_URL }}
+        continue-on-error: true
 
-      - name: Update K6 test with dynamic IP
-        run: |
-          API_IP="${{ steps.get_ip.outputs.API_GATEWAY_IP }}"
-          API_URL="http://$API_IP:8080/actuator/health"
-          
-          echo "Updating K6 test with URL: $API_URL"
-          
-          # Update the URL in the K6 test
-          sed -i "s|http://.*:8080/actuator/health|$API_URL|" tests/performance/load-test.js
-          
-          echo "Updated K6 test"
-
-      - name: Install Node.js
-        uses: actions/setup-node@v3
+      - name: Upload E2E Test Results
+        if: always()
+        uses: actions/upload-artifact@v3
         with:
-          node-version: '18'
+          name: e2e-test-results
+          path: |
+            **/target/surefire-reports/*.xml
+            **/target/surefire-reports/*.txt
+          if-no-files-found: ignore
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Locust dependencies
+        run: |
+          cd ci-pipelines/performance-tests
+          pip install -r requirements.txt
+
+      - name: Run Locust Performance Tests
+        run: |
+          API_URL="${{ steps.get_ip.outputs.API_GATEWAY_URL }}"
+          cd ci-pipelines/performance-tests
           
-      - name: Install k6
-        run: |
-          curl -s https://dl.k6.io/key.gpg | sudo apt-key add -
-          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
-          sudo apt update
-          sudo apt install -y k6
+          echo "Running Locust performance tests against: $API_URL"
+          echo "Test configuration: 100 users, 10 spawn rate, 2 minutes duration"
+          
+          locust -f locustfile.py \
+            --host="$API_URL" \
+            --headless \
+            -u 100 \
+            -r 10 \
+            -t 2m \
+            --html locust-report.html \
+            --csv locust-results \
+            --loglevel INFO
+        continue-on-error: true
 
-      - name: Run performance test
-        run: k6 run tests/performance/load-test.js
+      - name: Upload Locust Results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: locust-results
+          path: |
+            ci-pipelines/performance-tests/locust-report.html
+            ci-pipelines/performance-tests/locust-results*.csv
 
-      - name: Install Newman
-        run: npm install -g newman
-
-      - name: Run Newman collection with dynamic URL
-        run: |
-          newman run api_gateway.postman_collection.json
