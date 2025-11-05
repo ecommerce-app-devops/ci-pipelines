@@ -93,7 +93,7 @@ jobs:
 
       - name: Clone infra repository
         run: |
-          git clone https://${{ secrets.GH_TOKEN }}@github.com/ecommerce-microservices-lab/infra.git infra-repo
+          git clone https://${{ secrets.GH_TOKEN }}@github.com/ecommerce-app-devops/infrastructure.git infra-repo
           cd infra-repo
           if [ "${{ inputs.image_tag }}" = "stage" ]; then
             git checkout stage || true

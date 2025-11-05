@@ -120,7 +120,7 @@ jobs:
 
   deploy-to-k8s:
     needs: build-and-push
-    uses: ecommerce-microservices-backend-app-actions/ci-pipelines/.github/workflows/deploy-to-k8s.yml@main
+    uses: ecommerce-app-devops/ci-pipelines/.github/workflows/deploy-kube.yml@main
     with:
       image_name: ${{ needs.build-and-push.outputs.image_name }}
       image_tag: ${{ needs.build-and-push.outputs.final_tag }}

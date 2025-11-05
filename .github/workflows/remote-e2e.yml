@@ -21,7 +21,7 @@ on:
 
 jobs:
   call-remote-e2e:
-    uses: ecommerce-microservices-backend-app-actions/ci-pipelines/.github/workflows/run-e2e.yml@main
+    uses: ecommerce-app-devops/ci-pipelines/.github/workflows/run-e2e.yml@main
     with:
       namespace: ${{ inputs.namespace }}
     secrets:

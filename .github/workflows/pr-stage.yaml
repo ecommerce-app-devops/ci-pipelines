@@ -32,7 +32,7 @@ on:
 
 jobs:
   build-and-deploy:
-    uses: ecommerce-microservices-backend-app-actions/ci-pipelines/.github/workflows/build.yml@main
+    uses: ecommerce-app-devops/ci-pipelines/.github/workflows/build.yml@main
     with:
       image_name: ${{ inputs.image_name }}
       image_tag: stage
@@ -53,7 +53,7 @@ jobs:
 
   call-e2e:
     needs: build-and-deploy
-    uses: ecommerce-microservices-backend-app-actions/ci-pipelines/.github/workflows/remote-e2e.yml@main
+    uses: ecommerce-app-devops/ci-pipelines/.github/workflows/remote-e2e.yml@main
     with:
       namespace: dev
     secrets:

@@ -45,7 +45,7 @@ jobs:
 
       - name: Download sonar-project.properties from ci-templates
         run: |
-          git clone --depth=1 https://github.com/ecommerce-microservices-backend-app-actions/ci-pipelines temp-templates
+          git clone --depth=1 https://github.com/ecommerce-app-devops/ci-pipelines temp-templates
 
           sed -i "s/default-key/${{ steps.sanitize.outputs.sanitized_project_key }}/" sonar-project.properties
           sed -i "s/default-name/${{ steps.sanitize.outputs.sanitized_project_name }} (${{ steps.sanitize.outputs.safe_branch_name }})/" sonar-project.properties
