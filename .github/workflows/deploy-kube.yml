@@ -129,6 +129,14 @@ jobs:
           kubectl apply -f infra-repo/k8s/base/configmap.yaml -n "$NAMESPACE"
           echo "✅ ConfigMap ensured in namespace: $NAMESPACE"
 
+      - name: Ensure MySQL Secret exists in namespace
+        run: |
+          NAMESPACE="${{ steps.determine_namespace.outputs.namespace }}"
+          # Check if mysql-secret exists, if not, apply it
+          kubectl get secret mysql-secret -n "$NAMESPACE" >/dev/null 2>&1 || \
+          kubectl apply -f infra-repo/k8s/base/mysql-secret.yaml -n "$NAMESPACE"
+          echo "✅ MySQL Secret ensured in namespace: $NAMESPACE"
+
       - name: Update manifest with new image
         run: |
           NAMESPACE="${{ steps.determine_namespace.outputs.namespace }}"
