@@ -121,6 +121,14 @@ jobs:
             --docker-password="${{ secrets.ACR_PASSWORD }}" \
             -n "$NAMESPACE"
 
+      - name: Ensure ConfigMap exists in namespace
+        run: |
+          NAMESPACE="${{ steps.determine_namespace.outputs.namespace }}"
+          # Check if ConfigMap exists, if not, apply it
+          kubectl get configmap common-environment-variables -n "$NAMESPACE" >/dev/null 2>&1 || \
+          kubectl apply -f infra-repo/k8s/base/configmap.yaml -n "$NAMESPACE"
+          echo "✅ ConfigMap ensured in namespace: $NAMESPACE"
+
       - name: Update manifest with new image
         run: |
           NAMESPACE="${{ steps.determine_namespace.outputs.namespace }}"
