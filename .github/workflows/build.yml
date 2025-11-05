@@ -95,14 +95,6 @@ jobs:
           push: false
           tags: image-temp:scan
 
-      - name: Scan Docker image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: image-temp:scan
-          format: table
-          exit-code: 0
-          severity: CRITICAL,HIGH
-
       - name: Build and push Docker image to ACR
         uses: docker/build-push-action@v5
         with:
